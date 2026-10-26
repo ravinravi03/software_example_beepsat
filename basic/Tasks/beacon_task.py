@@ -18,6 +18,10 @@ class task(Task):
         set the above ANTENNA_ATTACHED variable to True
         to actually send the beacon packet
         """
+        if not self.cubesat.hardware['Radio1']:
+            self.debug("No radio, skipping beacon")
+            return
+        
         if ANTENNA_ATTACHED:
             self.debug("Sending beacon")
             self.cubesat.radio1.send("Hello World!",keep_listening=True)

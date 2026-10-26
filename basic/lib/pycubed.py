@@ -57,10 +57,10 @@ class Satellite:
         """
         Big init routine as the whole board is brought up.
         """
-        self.BOOTTIME= const(time.time())
-        self.data_cache={}
-        self.filenumbers={}
-        self.vlowbatt=6.0
+        self.BOOTTIME = time.monotonic() 
+        self.data_cache = {}
+        self.filenumbers = {}
+        self.vlowbatt = 4.0
         self.send_buff = memoryview(SEND_BUFF)
         self.debug=True
         self.micro=microcontroller
@@ -72,40 +72,37 @@ class Satellite:
                        'GPS':    False,
                        'WDT':    False,
                        'USB':    False,
-                       'PWR':    False}
+                       'PWR':    False,
+                       'Neopixel': False}
         # Define burn wires:
-        self._relayA = digitalio.DigitalInOut(board.RELAY_A)
-        self._relayA.switch_to_output(drive_mode=digitalio.DriveMode.OPEN_DRAIN)
-        self._resetReg = digitalio.DigitalInOut(board.VBUS_RST)
-        self._resetReg.switch_to_output(drive_mode=digitalio.DriveMode.OPEN_DRAIN)
+        self._relayA = None
+        self._resetReg = None
+        self._ichrg = None
+        self._chrg = None
+        self.en_gps = None
 
         # Define battery voltage
-        self._vbatt = AnalogIn(board.BATTERY)
+        self._vbatt = AnalogIn(board.VOLTAGE_MONITOR)
 
-        # Define MPPT charge current measurement
-        self._ichrg = AnalogIn(board.L1PROG)
-        self._chrg = digitalio.DigitalInOut(board.CHRG)
-        self._chrg.switch_to_input()
+        # Define the buses on Pico 2 pins
+        try:
+            self.i2c1  = busio.I2C(scl=board.GP5,sda=board.GP4)
+        except Exception as e:
+            self.i2c1 = None
+            if self.debug: print('[ERROR][I2C]',e)
+        self.spi   = busio.SPI(clock=board.GP18, MOSI=board.GP19, MISO=board.GP16) 
+        self.uart  = busio.UART(tx=board.GP0, rx=board.GP1)
 
-        # Define SPI,I2C,UART
-        self.i2c1  = busio.I2C(board.SCL,board.SDA)
-        self.spi   = board.SPI()
-        self.uart  = busio.UART(board.TX,board.RX)
+        # Onboard green LED for status indication
+        self.led = digitalio.DigitalInOut(board.LED)
+        self.led.switch_to_output(value=False)
 
-        # Define GPS
-        self.en_gps = digitalio.DigitalInOut(board.EN_GPS)
-        self.en_gps.switch_to_output()
-
-        # Define filesystem stuff
         self.logfile="/log.txt"
 
-        # Define radio
-        _rf_cs1 = digitalio.DigitalInOut(board.RF1_CS)
-        _rf_rst1 = digitalio.DigitalInOut(board.RF1_RST)
-        self.enable_rf = digitalio.DigitalInOut(board.EN_RF)
-        self.radio1_DIO0=digitalio.DigitalInOut(board.RF1_IO0)
-        # self.enable_rf.switch_to_output(value=False) # if U21
-        self.enable_rf.switch_to_output(value=True) # if U7
+        # Define radio for later use
+        _rf_cs1 = digitalio.DigitalInOut(board.GP13)
+        _rf_rst1 = digitalio.DigitalInOut(board.GP14)
+        self.radio1_DIO0 = digitalio.DigitalInOut(board.GP15)
         _rf_cs1.switch_to_output(value=True)
         _rf_rst1.switch_to_output(value=True)
         self.radio1_DIO0.switch_to_input()
@@ -113,7 +110,7 @@ class Satellite:
         # Initialize SD card (always init SD before anything else on spi bus)
         try:
             # Baud rate depends on the card, 4MHz should be safe
-            _sd = sdcardio.SDCard(self.spi, board.SD_CS, baudrate=4000000)
+            _sd = sdcardio.SDCard(self.spi, board.GP17, baudrate=4000000)
             _vfs = VfsFat(_sd)
             mount(_vfs, "/sd")
             self.fs=_vfs
@@ -226,6 +223,8 @@ class Satellite:
                 self.neopixel[0] = value
             except Exception as e:
                 print('[WARNING]',e)
+        else:
+            self.led.value = any(value)
 
     @property
     def charge_batteries(self):
@@ -243,7 +242,7 @@ class Satellite:
         _vbat=0
         for _ in range(50):
             _vbat+=self._vbatt.value * 3.3 / 65536
-        _voltage = (_vbat/50)*(316+110)/110 # 316/110 voltage divider
+        _voltage = (_vbat/50)*3 # GP29 sees VSYS/3
         return _voltage # volts
 
     @property
